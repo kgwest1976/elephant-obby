@@ -697,6 +697,10 @@ window.addEventListener('click', initMusicOnce);
 const keys = {};
 window.addEventListener('keydown', e => {
   keys[e.code] = true;
+  // Prevent arrow keys and space from scrolling the page
+  if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space'].includes(e.code)) {
+    e.preventDefault();
+  }
 });
 window.addEventListener('keyup', e => { keys[e.code] = false; });
 
@@ -997,8 +1001,9 @@ function update() {
   gameTime += dt;
   timerEl.textContent = `Time: ${gameTime.toFixed(1)}s`;
 
-  // --- Player 1 input (WASD + Space) ---
-  let p1mx = 0, p1mz = 0, p1jump = false;
+  // --- Shared input (both elephants move together) ---
+  // Either WASD or Arrow keys work, Space or Enter/RShift to jump
+  let mx = 0, mz = 0, jump = false;
   {
     const camForward = new THREE.Vector3();
     camera.getWorldDirection(camForward);
@@ -1007,43 +1012,22 @@ function update() {
     const camRight = new THREE.Vector3();
     camRight.crossVectors(camForward, new THREE.Vector3(0, 1, 0)).normalize();
 
-    if (keys['KeyW']) { p1mx += camForward.x; p1mz += camForward.z; }
-    if (keys['KeyS']) { p1mx -= camForward.x; p1mz -= camForward.z; }
-    if (keys['KeyA']) { p1mx -= camRight.x; p1mz -= camRight.z; }
-    if (keys['KeyD']) { p1mx += camRight.x; p1mz += camRight.z; }
+    if (keys['KeyW'] || keys['ArrowUp'])    { mx += camForward.x; mz += camForward.z; }
+    if (keys['KeyS'] || keys['ArrowDown'])  { mx -= camForward.x; mz -= camForward.z; }
+    if (keys['KeyA'] || keys['ArrowLeft'])  { mx -= camRight.x;   mz -= camRight.z; }
+    if (keys['KeyD'] || keys['ArrowRight']) { mx += camRight.x;   mz += camRight.z; }
 
-    const len1 = Math.sqrt(p1mx * p1mx + p1mz * p1mz);
-    if (len1 > 0) {
-      p1mx = (p1mx / len1) * MOVE_SPEED;
-      p1mz = (p1mz / len1) * MOVE_SPEED;
+    const len = Math.sqrt(mx * mx + mz * mz);
+    if (len > 0) {
+      mx = (mx / len) * MOVE_SPEED;
+      mz = (mz / len) * MOVE_SPEED;
     }
 
-    p1jump = !!(keys['Space']);
+    jump = !!(keys['Space'] || keys['Enter'] || keys['ShiftRight']);
   }
 
-  // --- Player 2 input ---
-  let p2mx = 0, p2mz = 0, p2jump = false;
-  {
-    const camForward = new THREE.Vector3();
-    camera.getWorldDirection(camForward);
-    camForward.y = 0;
-    camForward.normalize();
-    const camRight = new THREE.Vector3();
-    camRight.crossVectors(camForward, new THREE.Vector3(0, 1, 0)).normalize();
-
-    if (keys['ArrowUp']) { p2mx += camForward.x; p2mz += camForward.z; }
-    if (keys['ArrowDown']) { p2mx -= camForward.x; p2mz -= camForward.z; }
-    if (keys['ArrowLeft']) { p2mx -= camRight.x; p2mz -= camRight.z; }
-    if (keys['ArrowRight']) { p2mx += camRight.x; p2mz += camRight.z; }
-
-    const len2 = Math.sqrt(p2mx * p2mx + p2mz * p2mz);
-    if (len2 > 0) {
-      p2mx = (p2mx / len2) * MOVE_SPEED;
-      p2mz = (p2mz / len2) * MOVE_SPEED;
-    }
-
-    p2jump = !!(keys['Enter'] || keys['ShiftRight']);
-  }
+  const p1mx = mx, p1mz = mz, p1jump = jump;
+  const p2mx = mx, p2mz = mz, p2jump = jump;
 
   // --- Update both players ---
   updatePlayer(player1, p1mx, p1mz, p1jump, dt);
