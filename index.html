@@ -1,0 +1,1164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Obby — 3D Obstacle Course</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { overflow: hidden; background: #000; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+  canvas { display: block; }
+
+  /* HUD */
+  #hud {
+    position: fixed; top: 0; left: 0; width: 100%; pointer-events: none;
+    display: flex; justify-content: space-between; padding: 18px 28px; z-index: 10;
+  }
+  .hud-box {
+    background: rgba(0,0,0,0.45); backdrop-filter: blur(6px);
+    color: #fff; padding: 10px 20px; border-radius: 12px; font-size: 18px;
+    font-weight: 600; letter-spacing: 0.5px;
+  }
+  .hud-p1 { border-left: 4px solid #00b894; }
+  .hud-p2 { border-left: 4px solid #e67e22; }
+  #checkpoint-msg {
+    position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    color: #fff; font-size: 22px; font-weight: 600; text-shadow: 0 2px 12px rgba(0,0,0,0.5);
+    opacity: 0; transition: opacity 0.4s; pointer-events: none; z-index: 20;
+    background: rgba(0,0,0,0.55); backdrop-filter: blur(8px);
+    padding: 18px 32px; border-radius: 16px; max-width: 500px; text-align: center;
+    line-height: 1.5;
+  }
+  #checkpoint-msg .cp-title {
+    font-size: 28px; font-weight: 700; margin-bottom: 6px; display: block;
+  }
+  #checkpoint-msg .cp-fact {
+    font-size: 18px; font-weight: 400; opacity: 0.9; display: block;
+  }
+
+  /* Win / Restart overlay */
+  #overlay {
+    position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
+    background: rgba(0,0,0,0.55); backdrop-filter: blur(8px); z-index: 100;
+  }
+  #overlay.active { display: flex; }
+  .win-card {
+    background: linear-gradient(135deg, #a8edea 0%, #fed6e3 100%);
+    padding: 48px 56px; border-radius: 24px; text-align: center;
+    box-shadow: 0 12px 48px rgba(0,0,0,0.3);
+  }
+  .win-card h1 { font-size: 52px; color: #2d3436; margin-bottom: 12px; }
+  .win-card p { font-size: 22px; color: #636e72; margin: 6px 0; }
+  .win-card button {
+    margin-top: 24px; padding: 14px 40px; font-size: 20px; font-weight: 700;
+    border: none; border-radius: 14px; cursor: pointer; pointer-events: all;
+    background: linear-gradient(135deg, #6c5ce7, #a29bfe); color: #fff;
+    box-shadow: 0 4px 16px rgba(108,92,231,0.4); transition: transform 0.15s;
+  }
+  .win-card button:hover { transform: scale(1.06); }
+
+  /* Credit */
+  #credit {
+    position: fixed; bottom: 24px; right: 28px;
+    background: rgba(0,0,0,0.45); backdrop-filter: blur(6px);
+    color: #fff; padding: 8px 16px; border-radius: 10px; font-size: 13px;
+    font-weight: 600; pointer-events: none; z-index: 10; opacity: 0.7;
+  }
+
+  /* Instructions */
+  #instructions {
+    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+    background: rgba(0,0,0,0.45); backdrop-filter: blur(6px);
+    color: #fff; padding: 10px 24px; border-radius: 12px; font-size: 14px;
+    pointer-events: none; z-index: 10; opacity: 0.8;
+  }
+</style>
+</head>
+<body>
+
+<!-- HUD -->
+<div id="hud">
+  <div class="hud-box hud-p1" id="p1-deaths">P1 Falls: 0</div>
+  <div class="hud-box" id="timer">Time: 0.0s</div>
+  <div class="hud-box hud-p2" id="p2-deaths">P2 Falls: 0</div>
+</div>
+<div id="checkpoint-msg"></div>
+
+<!-- Win overlay -->
+<div id="overlay">
+  <div class="win-card">
+    <h1 id="win-title">🏆 You Win!</h1>
+    <p id="win-time"></p>
+    <p id="win-deaths"></p>
+    <button id="restart-btn">Play Again</button>
+  </div>
+</div>
+
+<!-- Credit -->
+<div id="credit">Made by Diggy</div>
+
+<!-- Controls hint -->
+<div id="instructions">P1: WASD + Space · P2: Arrows + Enter · First to finish wins!</div>
+
+<!-- Three.js from CDN -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+<script>
+// ============================================================
+//  LEVEL DATA — edit this array to add / rearrange obstacles!
+//  Each entry: { type, x, y, z, ... } (type-specific props below)
+//
+//  Types:
+//    "static"        — fixed platform (w, h, d, color)
+//    "moving"        — oscillates (axis, range, speed, w, h, d, color)
+//    "rotating"      — spins around Y (w, h, d, rotSpeed, color)
+//    "disappearing"  — fades in/out (onTime, offTime, w, h, d, color)
+//    "beam"          — narrow balance beam (length, color)
+//    "checkpoint"    — checkpoint ring (spawnX, spawnY, spawnZ)
+//    "finish"        — finish-line platform
+// ============================================================
+
+const LEVEL = [
+  // ===== START =====
+  { type: "static", x: 0, y: 0, z: 0, w: 14, h: 1, d: 14, color: 0x55efc4 },
+  { type: "checkpoint", x: 0, y: 1.5, z: 0, spawnX: 0, spawnY: 2, spawnZ: 0 },
+
+  // ===== SECTION 1: Warm-up jumps (big, close, flat) =====
+  { type: "static", x: 0, y: 0, z: -7, w: 9, h: 1, d: 9, color: 0x55efc4 },
+  { type: "static", x: 1, y: 0, z: -14, w: 9, h: 1, d: 9, color: 0x55efc4 },
+  { type: "static", x: 0, y: 0, z: -21, w: 9, h: 1, d: 9, color: 0x55efc4 },
+  { type: "static", x: -1, y: 0, z: -28, w: 9, h: 1, d: 9, color: 0x55efc4 },
+  { type: "static", x: 0, y: 0.5, z: -35, w: 9, h: 1, d: 9, color: 0x55efc4 },
+
+  // ===== SECTION 2: Slow moving platforms =====
+  { type: "moving", x: 0, y: 0.5, z: -44, w: 9, h: 0.8, d: 9, axis: "x", range: 1.5, speed: 0.2, color: 0xffeaa7 },
+  { type: "moving", x: 0, y: 1, z: -53, w: 9, h: 0.8, d: 9, axis: "x", range: 1.5, speed: 0.25, color: 0xffeaa7 },
+
+  // Checkpoint 2
+  { type: "static", x: 0, y: 1, z: -61, w: 12, h: 1, d: 12, color: 0x55efc4 },
+  { type: "checkpoint", x: 0, y: 2.5, z: -61, spawnX: 0, spawnY: 3, spawnZ: -61 },
+
+  // ===== SECTION 3: Disappearing platforms (very long on-time) =====
+  { type: "disappearing", x: 0, y: 1.5, z: -70, w: 9, h: 0.6, d: 9, onTime: 8.0, offTime: 0.5, color: 0xff7675 },
+  { type: "disappearing", x: 1, y: 1.5, z: -78, w: 9, h: 0.6, d: 9, onTime: 8.0, offTime: 0.5, color: 0xff7675 },
+
+  // Checkpoint 3
+  { type: "static", x: 0, y: 2, z: -86, w: 12, h: 1, d: 12, color: 0x55efc4 },
+  { type: "checkpoint", x: 0, y: 3.5, z: -86, spawnX: 0, spawnY: 4, spawnZ: -86 },
+
+  // ===== SECTION 4: Very slow rotating platforms =====
+  { type: "rotating", x: 0, y: 2.5, z: -95, w: 10, h: 0.8, d: 5, rotSpeed: 0.12, color: 0xa29bfe },
+  { type: "rotating", x: 0, y: 3, z: -105, w: 10, h: 0.8, d: 5, rotSpeed: -0.12, color: 0xa29bfe },
+
+  // ===== SECTION 5: Gentle staircase =====
+  { type: "static", x: 2, y: 3.5, z: -114, w: 9, h: 1, d: 9, color: 0x81ecec },
+  { type: "static", x: -2, y: 4, z: -122, w: 9, h: 1, d: 9, color: 0x81ecec },
+  { type: "static", x: 0, y: 4.5, z: -130, w: 9, h: 1, d: 9, color: 0x81ecec },
+
+  // Checkpoint 4
+  { type: "static", x: 0, y: 4.5, z: -138, w: 12, h: 1, d: 12, color: 0x55efc4 },
+  { type: "checkpoint", x: 0, y: 6, z: -138, spawnX: 0, spawnY: 6.5, spawnZ: -138 },
+
+  // ===== SECTION 6: Moving + static combo =====
+  { type: "moving", x: 0, y: 5, z: -147, w: 9, h: 0.6, d: 9, axis: "y", range: 1, speed: 0.2, color: 0xffeaa7 },
+  { type: "static", x: 0, y: 6.5, z: -155, w: 9, h: 1, d: 9, color: 0x55efc4 },
+  { type: "moving", x: 0, y: 6.5, z: -163, w: 9, h: 0.6, d: 9, axis: "x", range: 1.5, speed: 0.25, color: 0xffeaa7 },
+
+  // Checkpoint 5
+  { type: "static", x: 0, y: 7, z: -171, w: 12, h: 1, d: 12, color: 0x55efc4 },
+  { type: "checkpoint", x: 0, y: 8.5, z: -171, spawnX: 0, spawnY: 9, spawnZ: -171 },
+
+  // ===== SECTION 7: Slow spinning gauntlet =====
+  { type: "rotating", x: 0, y: 7.5, z: -180, w: 10, h: 0.8, d: 5, rotSpeed: 0.12, color: 0xa29bfe },
+  { type: "static", x: 0, y: 8, z: -188, w: 8, h: 1, d: 8, color: 0x55efc4 },
+  { type: "rotating", x: 0, y: 8, z: -198, w: 10, h: 0.8, d: 5, rotSpeed: -0.15, color: 0xa29bfe },
+
+  // ===== SECTION 8: Elevator ride =====
+  { type: "moving", x: 0, y: 8.5, z: -207, w: 9, h: 0.6, d: 9, axis: "y", range: 1.5, speed: 0.2, color: 0xffeaa7 },
+  { type: "static", x: 0, y: 10.5, z: -215, w: 9, h: 1, d: 9, color: 0x55efc4 },
+
+  // Checkpoint 6
+  { type: "static", x: 0, y: 10.5, z: -223, w: 12, h: 1, d: 12, color: 0x55efc4 },
+  { type: "checkpoint", x: 0, y: 12, z: -223, spawnX: 0, spawnY: 12.5, spawnZ: -223 },
+
+  // ===== SECTION 9: Disappearing + static =====
+  { type: "disappearing", x: 0, y: 11, z: -232, w: 9, h: 0.6, d: 9, onTime: 8.0, offTime: 0.5, color: 0xff7675 },
+  { type: "static", x: 0, y: 11.5, z: -240, w: 9, h: 1, d: 9, color: 0x55efc4 },
+  { type: "disappearing", x: 0, y: 11.5, z: -248, w: 9, h: 0.6, d: 9, onTime: 8.0, offTime: 0.5, color: 0xff7675 },
+
+  // ===== SECTION 10: Sky staircase =====
+  { type: "static", x: 2, y: 12, z: -257, w: 9, h: 1, d: 9, color: 0xfab1a0 },
+  { type: "static", x: -2, y: 12.5, z: -265, w: 9, h: 1, d: 9, color: 0xfab1a0 },
+  { type: "static", x: 0, y: 13, z: -273, w: 9, h: 1, d: 9, color: 0xfab1a0 },
+
+  // Checkpoint 7
+  { type: "static", x: 0, y: 13, z: -281, w: 12, h: 1, d: 12, color: 0x55efc4 },
+  { type: "checkpoint", x: 0, y: 14.5, z: -281, spawnX: 0, spawnY: 15, spawnZ: -281 },
+
+  // ===== SECTION 11: Final mix (easy) =====
+  { type: "moving", x: 0, y: 13.5, z: -290, w: 9, h: 0.6, d: 9, axis: "x", range: 1.5, speed: 0.25, color: 0xffeaa7 },
+  { type: "static", x: 0, y: 14, z: -298, w: 9, h: 1, d: 9, color: 0x55efc4 },
+  { type: "rotating", x: 0, y: 14, z: -308, w: 10, h: 0.8, d: 5, rotSpeed: 0.12, color: 0xa29bfe },
+
+  // ===== SECTION 12: Victory run =====
+  { type: "static", x: 0, y: 14.5, z: -317, w: 9, h: 1, d: 9, color: 0xfdcb6e },
+  { type: "static", x: 0, y: 14.5, z: -325, w: 9, h: 1, d: 9, color: 0xfdcb6e },
+  { type: "static", x: 0, y: 14.5, z: -333, w: 9, h: 1, d: 9, color: 0xfdcb6e },
+
+  // ===== FINISH =====
+  { type: "finish", x: 0, y: 14.5, z: -342, w: 14, h: 1, d: 14 },
+];
+
+
+// ============================================================
+//  SETUP — Scene, Camera, Renderer
+// ============================================================
+
+const scene = new THREE.Scene();
+
+// Gradient background
+const canvas2d = document.createElement('canvas');
+canvas2d.width = 2; canvas2d.height = 512;
+const ctx = canvas2d.getContext('2d');
+const grad = ctx.createLinearGradient(0, 0, 0, 512);
+grad.addColorStop(0, '#74b9ff');
+grad.addColorStop(1, '#dfe6e9');
+ctx.fillStyle = grad;
+ctx.fillRect(0, 0, 2, 512);
+const bgTex = new THREE.CanvasTexture(canvas2d);
+scene.background = bgTex;
+
+// Fog for depth
+scene.fog = new THREE.FogExp2(0xdfe6e9, 0.006);
+
+const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 500);
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+// Lighting
+const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+scene.add(ambientLight);
+
+const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+dirLight.position.set(20, 40, 20);
+dirLight.castShadow = true;
+dirLight.shadow.mapSize.set(2048, 2048);
+dirLight.shadow.camera.left = -60; dirLight.shadow.camera.right = 60;
+dirLight.shadow.camera.top = 60; dirLight.shadow.camera.bottom = -60;
+dirLight.shadow.camera.far = 150;
+scene.add(dirLight);
+
+
+// ============================================================
+//  PLAYER — elephant character factory
+// ============================================================
+
+const PLAYER_SCALE = 1.8;
+const PLAYER_RADIUS = 0.6 * PLAYER_SCALE;
+const PLAYER_HEIGHT = 1.4 * PLAYER_SCALE;
+const GRAVITY = -22;
+const JUMP_VELOCITY = 12;
+const MOVE_SPEED = 9;
+const FALL_THRESHOLD = -30;
+
+function createElephant(colors) {
+  const group = new THREE.Group();
+  const baseMat = new THREE.MeshStandardMaterial({ color: colors.base });
+  const darkMat = new THREE.MeshStandardMaterial({ color: colors.dark });
+  const lightMat = new THREE.MeshStandardMaterial({ color: colors.light, side: THREE.DoubleSide });
+  const innerMat = new THREE.MeshStandardMaterial({ color: colors.inner, side: THREE.DoubleSide });
+
+  // Body
+  const bodyGeo = new THREE.SphereGeometry(0.7, 16, 12);
+  const bodyMesh = new THREE.Mesh(bodyGeo, baseMat);
+  bodyMesh.scale.set(1, 0.9, 1.15);
+  bodyMesh.castShadow = true;
+  bodyMesh.position.y = 0.8;
+  group.add(bodyMesh);
+
+  // Head
+  const headGeo = new THREE.SphereGeometry(0.55, 16, 12);
+  const headMesh = new THREE.Mesh(headGeo, baseMat);
+  headMesh.castShadow = true;
+  headMesh.position.set(0, 1.55, 0.35);
+  group.add(headMesh);
+
+  // Ears
+  const earGeo = new THREE.SphereGeometry(0.55, 16, 12);
+  const innerEarGeo = new THREE.SphereGeometry(0.35, 12, 10);
+
+  const leftEarPivot = new THREE.Group();
+  leftEarPivot.position.set(-0.45, 1.75, 0.2);
+  group.add(leftEarPivot);
+
+  const leftEar = new THREE.Mesh(earGeo, lightMat);
+  leftEar.scale.set(0.12, 0.9, 0.75);
+  leftEar.position.set(-0.15, -0.3, 0);
+  leftEar.castShadow = true;
+  leftEarPivot.add(leftEar);
+
+  const leftInnerEar = new THREE.Mesh(innerEarGeo, innerMat);
+  leftInnerEar.scale.set(0.1, 0.7, 0.55);
+  leftInnerEar.position.set(-0.16, -0.32, 0.03);
+  leftEarPivot.add(leftInnerEar);
+
+  const rightEarPivot = new THREE.Group();
+  rightEarPivot.position.set(0.45, 1.75, 0.2);
+  group.add(rightEarPivot);
+
+  const rightEar = new THREE.Mesh(earGeo, lightMat);
+  rightEar.scale.set(0.12, 0.9, 0.75);
+  rightEar.position.set(0.15, -0.3, 0);
+  rightEar.castShadow = true;
+  rightEarPivot.add(rightEar);
+
+  const rightInnerEar = new THREE.Mesh(innerEarGeo, innerMat);
+  rightInnerEar.scale.set(0.1, 0.7, 0.55);
+  rightInnerEar.position.set(0.16, -0.32, 0.03);
+  rightEarPivot.add(rightInnerEar);
+
+  // Trunk
+  const trunkParts = [];
+  const trunkPositions = [
+    { x: 0, y: 1.25, z: 0.75, r: 0.15 },
+    { x: 0, y: 1.05, z: 0.9,  r: 0.13 },
+    { x: 0, y: 0.85, z: 0.98, r: 0.11 },
+    { x: 0, y: 0.65, z: 1.0,  r: 0.10 },
+    { x: 0, y: 0.50, z: 0.95, r: 0.09 },
+  ];
+  for (const tp of trunkPositions) {
+    const sg = new THREE.SphereGeometry(tp.r, 8, 8);
+    const sm = new THREE.Mesh(sg, baseMat);
+    sm.position.set(tp.x, tp.y, tp.z);
+    sm.castShadow = true;
+    group.add(sm);
+    trunkParts.push(sm);
+  }
+
+  // Eyes
+  const eyeGeo = new THREE.SphereGeometry(0.12, 8, 8);
+  const eyeMat = new THREE.MeshStandardMaterial({ color: 0xffffff });
+  const leftEye = new THREE.Mesh(eyeGeo, eyeMat);
+  leftEye.position.set(-0.22, 1.65, 0.72);
+  group.add(leftEye);
+  const rightEye = leftEye.clone();
+  rightEye.position.x = 0.22;
+  group.add(rightEye);
+
+  // Pupils
+  const pupilGeo = new THREE.SphereGeometry(0.06, 8, 8);
+  const pupilMat = new THREE.MeshStandardMaterial({ color: 0x2d3436 });
+  const leftPupil = new THREE.Mesh(pupilGeo, pupilMat);
+  leftPupil.position.set(-0.22, 1.65, 0.82);
+  group.add(leftPupil);
+  const rightPupil = leftPupil.clone();
+  rightPupil.position.x = 0.22;
+  group.add(rightPupil);
+
+  // Legs
+  const legGeo = new THREE.CylinderGeometry(0.15, 0.18, 0.4, 8);
+  const legPositions = [
+    { x: -0.35, z: -0.3 },
+    { x: 0.35,  z: -0.3 },
+    { x: -0.35, z: 0.35 },
+    { x: 0.35,  z: 0.35 },
+  ];
+  const legs = [];
+  for (const lp of legPositions) {
+    const leg = new THREE.Mesh(legGeo, darkMat);
+    leg.position.set(lp.x, 0.2, lp.z);
+    leg.castShadow = true;
+    group.add(leg);
+    legs.push(leg);
+  }
+
+  // Tail
+  const tailStalkGeo = new THREE.CylinderGeometry(0.03, 0.04, 0.45, 6);
+  const tail = new THREE.Mesh(tailStalkGeo, darkMat);
+  tail.position.set(0, 0.7, -0.85);
+  tail.rotation.x = 0.4;
+  group.add(tail);
+
+  const tuftGeo = new THREE.SphereGeometry(0.08, 8, 6);
+  const tailTuft = new THREE.Mesh(tuftGeo, darkMat);
+  tuftGeo.scale(1, 1.3, 1);
+  tailTuft.position.set(0, 0.5, -0.95);
+  group.add(tailTuft);
+
+  group.scale.set(PLAYER_SCALE, PLAYER_SCALE, PLAYER_SCALE);
+
+  return {
+    group,
+    parts: { leftEarPivot, rightEarPivot, trunkParts, legs, tail, tailTuft }
+  };
+}
+
+// Color palettes
+const GREEN_COLORS = { base: 0x00b894, dark: 0x00a381, light: 0x55efc4, inner: 0x81ecb0 };
+const ORANGE_COLORS = { base: 0xe67e22, dark: 0xd35400, light: 0xf39c12, inner: 0xf5b041 };
+
+// Create both elephants
+const elephant1 = createElephant(GREEN_COLORS);
+const elephant2 = createElephant(ORANGE_COLORS);
+scene.add(elephant1.group);
+scene.add(elephant2.group);
+
+// Player states
+const player1 = {
+  x: -1, y: 2, z: 0,
+  vx: 0, vy: 0, vz: 0,
+  onGround: false,
+  spawnX: -1, spawnY: 2, spawnZ: 0,
+  deathCount: 0,
+};
+const player2 = {
+  x: 1, y: 2, z: 0,
+  vx: 0, vy: 0, vz: 0,
+  onGround: false,
+  spawnX: 1, spawnY: 2, spawnZ: 0,
+  deathCount: 0,
+};
+
+
+// ============================================================
+//  BUILD LEVEL — create meshes from LEVEL data
+// ============================================================
+
+const platforms = [];
+const checkpoints = [];
+let finishPlatform = null;
+
+function buildLevel() {
+  platforms.forEach(p => scene.remove(p.mesh));
+  checkpoints.forEach(c => scene.remove(c.mesh));
+  if (finishPlatform) scene.remove(finishPlatform.mesh);
+  platforms.length = 0;
+  checkpoints.length = 0;
+  finishPlatform = null;
+
+  for (let li = 0; li < LEVEL.length; li++) {
+    const d = LEVEL[li];
+    switch (d.type) {
+
+      case "static": {
+        const geo = new THREE.BoxGeometry(d.w, d.h, d.d);
+        const mat = new THREE.MeshStandardMaterial({ color: d.color });
+        const mesh = new THREE.Mesh(geo, mat);
+        mesh.position.set(d.x, d.y, d.z);
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+        scene.add(mesh);
+        platforms.push({ mesh, data: d, type: "static", levelIdx: li });
+        break;
+      }
+
+      case "moving": {
+        const geo = new THREE.BoxGeometry(d.w, d.h, d.d);
+        const mat = new THREE.MeshStandardMaterial({ color: d.color });
+        const mesh = new THREE.Mesh(geo, mat);
+        mesh.position.set(d.x, d.y, d.z);
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+        scene.add(mesh);
+        const origin = { x: d.x, y: d.y, z: d.z };
+        platforms.push({
+          mesh, data: d, type: "moving", levelIdx: li,
+          update(t) {
+            const offset = Math.sin(t * d.speed) * d.range;
+            if (d.axis === "x") mesh.position.x = origin.x + offset;
+            else if (d.axis === "y") mesh.position.y = origin.y + offset;
+            else mesh.position.z = origin.z + offset;
+          }
+        });
+        break;
+      }
+
+      case "rotating": {
+        const geo = new THREE.BoxGeometry(d.w, d.h, d.d);
+        const mat = new THREE.MeshStandardMaterial({ color: d.color });
+        const mesh = new THREE.Mesh(geo, mat);
+        mesh.position.set(d.x, d.y, d.z);
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+        scene.add(mesh);
+        platforms.push({
+          mesh, data: d, type: "rotating", levelIdx: li,
+          update(t) {
+            mesh.rotation.y = t * d.rotSpeed;
+          }
+        });
+        break;
+      }
+
+      case "disappearing": {
+        const geo = new THREE.BoxGeometry(d.w, d.h, d.d);
+        const mat = new THREE.MeshStandardMaterial({ color: d.color, transparent: true });
+        const mesh = new THREE.Mesh(geo, mat);
+        mesh.position.set(d.x, d.y, d.z);
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+        scene.add(mesh);
+        const cycle = d.onTime + d.offTime;
+        platforms.push({
+          mesh, data: d, type: "disappearing", levelIdx: li,
+          visible: true,
+          update(t) {
+            const phase = t % cycle;
+            this.visible = phase < d.onTime;
+            mesh.visible = this.visible;
+            if (this.visible) {
+              const fadeZone = 0.4;
+              const remaining = d.onTime - phase;
+              mat.opacity = remaining < fadeZone ? remaining / fadeZone : 1.0;
+            }
+          }
+        });
+        break;
+      }
+
+      case "beam": {
+        const beamWidth = 1.4;
+        const geo = new THREE.BoxGeometry(beamWidth, 0.4, d.length);
+        const mat = new THREE.MeshStandardMaterial({ color: d.color });
+        const mesh = new THREE.Mesh(geo, mat);
+        mesh.position.set(d.x, d.y, d.z - d.length / 2);
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+        scene.add(mesh);
+        platforms.push({
+          mesh, data: { ...d, w: beamWidth, h: 0.4, d: d.length, x: d.x, y: d.y, z: d.z - d.length / 2 },
+          type: "beam", levelIdx: li
+        });
+        break;
+      }
+
+      case "checkpoint": {
+        const ringGeo = new THREE.TorusGeometry(1.2, 0.12, 12, 32);
+        const ringMat = new THREE.MeshStandardMaterial({
+          color: 0xfdcb6e, emissive: 0xfdcb6e, emissiveIntensity: 0.6
+        });
+        const mesh = new THREE.Mesh(ringGeo, ringMat);
+        mesh.position.set(d.x, d.y, d.z);
+        mesh.rotation.x = Math.PI / 2;
+        scene.add(mesh);
+
+        const light = new THREE.PointLight(0xfdcb6e, 0.8, 6);
+        light.position.copy(mesh.position);
+        scene.add(light);
+
+        checkpoints.push({
+          mesh, data: d, light,
+          reachedP1: false, reachedP2: false,
+          update(t) { mesh.rotation.z = t * 1.5; }
+        });
+        break;
+      }
+
+      case "finish": {
+        const geo = new THREE.BoxGeometry(d.w, d.h, d.d);
+        const mat = new THREE.MeshStandardMaterial({ color: 0xffd700, emissive: 0xffd700, emissiveIntensity: 0.3 });
+        const mesh = new THREE.Mesh(geo, mat);
+        mesh.position.set(d.x, d.y, d.z);
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+        scene.add(mesh);
+
+        const poleGeo = new THREE.CylinderGeometry(0.08, 0.08, 4, 8);
+        const poleMat = new THREE.MeshStandardMaterial({ color: 0x2d3436 });
+        const pole = new THREE.Mesh(poleGeo, poleMat);
+        pole.position.set(d.x, d.y + 2.5, d.z);
+        scene.add(pole);
+
+        const flagGeo = new THREE.BoxGeometry(1.5, 0.8, 0.05);
+        const flagMat = new THREE.MeshStandardMaterial({ color: 0xe17055, emissive: 0xe17055, emissiveIntensity: 0.3 });
+        const flag = new THREE.Mesh(flagGeo, flagMat);
+        flag.position.set(d.x + 0.8, d.y + 4, d.z);
+        scene.add(flag);
+
+        const particleCount = 40;
+        const particleGeo = new THREE.BufferGeometry();
+        const positions = new Float32Array(particleCount * 3);
+        for (let i = 0; i < particleCount; i++) {
+          positions[i * 3] = d.x + (Math.random() - 0.5) * 8;
+          positions[i * 3 + 1] = d.y + 1 + Math.random() * 5;
+          positions[i * 3 + 2] = d.z + (Math.random() - 0.5) * 8;
+        }
+        particleGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        const particleMat = new THREE.PointsMaterial({ color: 0xffd700, size: 0.2, transparent: true, opacity: 0.8 });
+        const particles = new THREE.Points(particleGeo, particleMat);
+        scene.add(particles);
+
+        finishPlatform = {
+          mesh, data: d, particles, flag,
+          update(t) {
+            particles.rotation.y = t * 0.3;
+            flag.position.y = d.y + 4 + Math.sin(t * 2) * 0.15;
+          }
+        };
+        platforms.push({ mesh, data: d, type: "finish", levelIdx: li });
+        break;
+      }
+    }
+  }
+}
+
+buildLevel();
+
+
+// ============================================================
+//  HAPPY MUSIC — procedural chiptune melody via Web Audio API
+// ============================================================
+
+let audioCtx = null;
+let musicPlaying = false;
+
+function startMusic() {
+  if (musicPlaying) return;
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  musicPlaying = true;
+
+  const melodyNotes = [
+    523, 587, 659, 587, 523, 440, 392, 440,
+    523, 659, 587, 523, 440, 523, 392, 330,
+    392, 440, 523, 587, 659, 587, 523, 440,
+    523, 392, 440, 523, 659, 587, 523, 523,
+  ];
+
+  const bassNotes = [
+    131, 131, 165, 165, 175, 175, 131, 131,
+    131, 131, 165, 165, 175, 175, 131, 131,
+    131, 131, 165, 165, 175, 175, 131, 131,
+    131, 131, 165, 165, 175, 175, 131, 131,
+  ];
+
+  const bpm = 140;
+  const noteLen = 60 / bpm;
+  const loopLen = melodyNotes.length * noteLen;
+
+  function scheduleLoop(startTime) {
+    for (let i = 0; i < melodyNotes.length; i++) {
+      const t = startTime + i * noteLen;
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = 'square';
+      osc.frequency.value = melodyNotes[i];
+      gain.gain.setValueAtTime(0.06, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + noteLen * 0.9);
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.start(t);
+      osc.stop(t + noteLen);
+    }
+
+    for (let i = 0; i < bassNotes.length; i++) {
+      const t = startTime + i * noteLen;
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.value = bassNotes[i];
+      gain.gain.setValueAtTime(0.08, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + noteLen * 0.85);
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.start(t);
+      osc.stop(t + noteLen);
+    }
+
+    setTimeout(() => {
+      if (musicPlaying) scheduleLoop(startTime + loopLen);
+    }, (loopLen - 0.5) * 1000);
+  }
+
+  scheduleLoop(audioCtx.currentTime + 0.1);
+}
+
+function stopMusic() {
+  musicPlaying = false;
+  if (audioCtx) { audioCtx.close(); audioCtx = null; }
+}
+
+function initMusicOnce() {
+  startMusic();
+  window.removeEventListener('keydown', initMusicOnce);
+  window.removeEventListener('click', initMusicOnce);
+}
+window.addEventListener('keydown', initMusicOnce);
+window.addEventListener('click', initMusicOnce);
+
+
+// ============================================================
+//  INPUT
+// ============================================================
+
+const keys = {};
+window.addEventListener('keydown', e => {
+  keys[e.code] = true;
+});
+window.addEventListener('keyup', e => { keys[e.code] = false; });
+
+
+// ============================================================
+//  GAME STATE
+// ============================================================
+
+let gameTime = 0;
+let gameWon = false;
+let gameRunning = true;
+let lastTime = performance.now();
+
+const timerEl = document.getElementById('timer');
+const p1DeathsEl = document.getElementById('p1-deaths');
+const p2DeathsEl = document.getElementById('p2-deaths');
+const checkpointMsg = document.getElementById('checkpoint-msg');
+const overlay = document.getElementById('overlay');
+
+const ELEPHANT_FACTS = [
+  "Elephants are the largest land animals on Earth!",
+  "An elephant's trunk has over 40,000 muscles in it!",
+  "Elephants can recognize themselves in a mirror!",
+  "Baby elephants suck their trunks like human babies suck their thumbs!",
+  "Elephants can swim — they use their trunk as a snorkel!",
+  "Elephants love to play and splash around in water!",
+  "An elephant's skin is about 1 inch thick, but it's very sensitive!",
+  "Elephants communicate using sounds too low for humans to hear!",
+  "Elephants can live up to 70 years in the wild!",
+  "Elephants spend about 16 hours a day eating!",
+];
+let factIndex = 0;
+
+function showCheckpointMessage(who) {
+  const fact = ELEPHANT_FACTS[factIndex % ELEPHANT_FACTS.length];
+  factIndex++;
+  checkpointMsg.innerHTML =
+    '<span class="cp-title">' + who + ' Checkpoint!</span>' +
+    '<span class="cp-fact">' + fact + '</span>';
+  checkpointMsg.style.opacity = '1';
+  setTimeout(() => { checkpointMsg.style.opacity = '0'; }, 4500);
+
+  if ('speechSynthesis' in window) {
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(who + ' Checkpoint! ' + fact);
+    utterance.rate = 1.0;
+    utterance.pitch = 1.1;
+    utterance.volume = 0.9;
+    window.speechSynthesis.speak(utterance);
+  }
+}
+
+function respawnPlayer(pState) {
+  pState.x = pState.spawnX;
+  pState.y = pState.spawnY;
+  pState.z = pState.spawnZ;
+  pState.vx = 0; pState.vy = 0; pState.vz = 0;
+  pState.onGround = false;
+}
+
+function restart() {
+  gameTime = 0;
+  gameWon = false;
+  gameRunning = true;
+  factIndex = 0;
+
+  player1.spawnX = -1; player1.spawnY = 2; player1.spawnZ = 0;
+  player1.deathCount = 0;
+  player2.spawnX = 1; player2.spawnY = 2; player2.spawnZ = 0;
+  player2.deathCount = 0;
+
+  checkpoints.forEach(c => {
+    c.reachedP1 = false;
+    c.reachedP2 = false;
+    c.mesh.material.color.setHex(0xfdcb6e);
+    c.mesh.material.emissive.setHex(0xfdcb6e);
+    c.light.color.setHex(0xfdcb6e);
+  });
+
+  respawnPlayer(player1);
+  respawnPlayer(player2);
+  p1DeathsEl.textContent = 'P1 Falls: 0';
+  p2DeathsEl.textContent = 'P2 Falls: 0';
+  overlay.classList.remove('active');
+  lastTime = performance.now();
+  startMusic();
+}
+
+document.getElementById('restart-btn').addEventListener('click', restart);
+
+
+// ============================================================
+//  COLLISION — AABB test between player capsule and platform box
+// ============================================================
+
+function getAABB(platformEntry) {
+  const m = platformEntry.mesh;
+  const d = platformEntry.data;
+
+  if (platformEntry.type === "rotating") {
+    m.geometry.computeBoundingBox();
+    const box = m.geometry.boundingBox.clone();
+    box.applyMatrix4(m.matrixWorld);
+    return {
+      minX: box.min.x, maxX: box.max.x,
+      minY: box.min.y, maxY: box.max.y,
+      minZ: box.min.z, maxZ: box.max.z,
+    };
+  }
+
+  const px = m.position.x, py = m.position.y, pz = m.position.z;
+  const hw = d.w / 2, hh = d.h / 2, hd = d.d / 2;
+  return {
+    minX: px - hw, maxX: px + hw,
+    minY: py - hh, maxY: py + hh,
+    minZ: pz - hd, maxZ: pz + hd,
+  };
+}
+
+function makePlayerAABB(pState) {
+  return {
+    minX: pState.x - PLAYER_RADIUS,
+    maxX: pState.x + PLAYER_RADIUS,
+    minY: pState.y,
+    maxY: pState.y + PLAYER_HEIGHT + PLAYER_RADIUS,
+    minZ: pState.z - PLAYER_RADIUS,
+    maxZ: pState.z + PLAYER_RADIUS,
+  };
+}
+
+function aabbOverlap(a, b) {
+  return a.minX < b.maxX && a.maxX > b.minX &&
+         a.minY < b.maxY && a.maxY > b.minY &&
+         a.minZ < b.maxZ && a.maxZ > b.minZ;
+}
+
+
+// ============================================================
+//  PHYSICS — updatePlayer: velocity, gravity, collision
+// ============================================================
+
+function updatePlayer(pState, moveX, moveZ, wantJump, dt) {
+  pState.vx = moveX;
+  pState.vz = moveZ;
+
+  if (wantJump && pState.onGround) {
+    pState.vy = JUMP_VELOCITY;
+    pState.onGround = false;
+  }
+
+  pState.vy += GRAVITY * dt;
+
+  pState.x += pState.vx * dt;
+  pState.y += pState.vy * dt;
+  pState.z += pState.vz * dt;
+
+  // Collision
+  pState.onGround = false;
+  const pAABB = makePlayerAABB(pState);
+
+  for (const p of platforms) {
+    if (p.type === "disappearing" && !p.visible) continue;
+
+    const platAABB = getAABB(p);
+
+    if (aabbOverlap(pAABB, platAABB)) {
+      const overlapLeft = pAABB.maxX - platAABB.minX;
+      const overlapRight = platAABB.maxX - pAABB.minX;
+      const overlapBottom = pAABB.maxY - platAABB.minY;
+      const overlapTop = platAABB.maxY - pAABB.minY;
+      const overlapFront = pAABB.maxZ - platAABB.minZ;
+      const overlapBack = platAABB.maxZ - pAABB.minZ;
+
+      const minOverlap = Math.min(overlapLeft, overlapRight, overlapBottom, overlapTop, overlapFront, overlapBack);
+
+      if (minOverlap === overlapTop && pState.vy <= 0) {
+        pState.y = platAABB.maxY;
+        pState.vy = 0;
+        pState.onGround = true;
+      } else if (minOverlap === overlapBottom && pState.vy > 0) {
+        pState.y = platAABB.minY - PLAYER_HEIGHT - PLAYER_RADIUS;
+        pState.vy = 0;
+      } else if (minOverlap === overlapLeft) {
+        pState.x = platAABB.minX - PLAYER_RADIUS;
+      } else if (minOverlap === overlapRight) {
+        pState.x = platAABB.maxX + PLAYER_RADIUS;
+      } else if (minOverlap === overlapFront) {
+        pState.z = platAABB.minZ - PLAYER_RADIUS;
+      } else if (minOverlap === overlapBack) {
+        pState.z = platAABB.maxZ + PLAYER_RADIUS;
+      }
+    }
+  }
+}
+
+
+// ============================================================
+//  ANIMATION — animateElephant
+// ============================================================
+
+function animateElephant(elephant, pState, t) {
+  const { group, parts } = elephant;
+  const { leftEarPivot, rightEarPivot, trunkParts, legs, tail, tailTuft } = parts;
+
+  group.position.set(pState.x, pState.y, pState.z);
+
+  const isMoving = Math.abs(pState.vx) > 0.1 || Math.abs(pState.vz) > 0.1;
+  if (isMoving) {
+    const angle = Math.atan2(pState.vx, pState.vz);
+    const targetQ = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), angle);
+    group.quaternion.slerp(targetQ, 0.15);
+  }
+
+  // Trunk sway
+  const trunkSwing = Math.sin(t * 3) * 0.08;
+  for (let i = 0; i < trunkParts.length; i++) {
+    trunkParts[i].position.x = trunkSwing * (i + 1) * 0.5;
+  }
+
+  // Ear flap
+  const earSway = Math.sin(t * 1.8) * 0.12;
+  const earFlap = Math.sin(t * 4.5) * 0.06;
+  const earFold = earSway + earFlap;
+  leftEarPivot.rotation.z = -0.15 + earFold;
+  leftEarPivot.rotation.x = Math.sin(t * 2) * 0.08;
+  rightEarPivot.rotation.z = 0.15 - earFold;
+  rightEarPivot.rotation.x = Math.sin(t * 2 + 0.5) * 0.08;
+
+  // Tail wag
+  tail.rotation.z = Math.sin(t * 4) * 0.3;
+  tailTuft.position.x = Math.sin(t * 4) * 0.12;
+
+  // Leg bob
+  if (isMoving) {
+    for (let i = 0; i < legs.length; i++) {
+      legs[i].position.y = 0.2 + Math.sin(t * 10 + i * Math.PI * 0.5) * 0.06;
+    }
+  } else {
+    for (const leg of legs) leg.position.y = 0.2;
+  }
+}
+
+
+// ============================================================
+//  CAMERA — third-person follow (tracks the leader)
+// ============================================================
+
+const CAM_OFFSET = new THREE.Vector3(0, 9, 16);
+const camTarget = new THREE.Vector3();
+const camPos = new THREE.Vector3();
+
+function updateCamera(dt) {
+  // Follow the player who is furthest ahead (lowest Z = further in course)
+  const leader = player1.z < player2.z ? player1 : player2;
+
+  camTarget.set(leader.x, leader.y + 1.2, leader.z);
+  const desiredPos = new THREE.Vector3(
+    leader.x + CAM_OFFSET.x,
+    leader.y + CAM_OFFSET.y,
+    leader.z + CAM_OFFSET.z
+  );
+  const t = 1 - Math.pow(0.01, dt);
+  camPos.lerp(desiredPos, t);
+  camera.position.copy(camPos);
+  camera.lookAt(camTarget);
+}
+
+
+// ============================================================
+//  GAME LOOP
+// ============================================================
+
+function update() {
+  requestAnimationFrame(update);
+
+  const now = performance.now();
+  let dt = (now - lastTime) / 1000;
+  lastTime = now;
+  if (dt > 0.1) dt = 0.1;
+
+  if (!gameRunning) {
+    renderer.render(scene, camera);
+    return;
+  }
+
+  const t = performance.now() / 1000;
+
+  // --- Update animated platforms ---
+  for (const p of platforms) {
+    if (p.update) p.update(t);
+  }
+  for (const c of checkpoints) {
+    if (c.update) c.update(t);
+  }
+  if (finishPlatform && finishPlatform.update) finishPlatform.update(t);
+
+  // --- Timer ---
+  gameTime += dt;
+  timerEl.textContent = `Time: ${gameTime.toFixed(1)}s`;
+
+  // --- Player 1 input (WASD + Space) ---
+  let p1mx = 0, p1mz = 0, p1jump = false;
+  {
+    const camForward = new THREE.Vector3();
+    camera.getWorldDirection(camForward);
+    camForward.y = 0;
+    camForward.normalize();
+    const camRight = new THREE.Vector3();
+    camRight.crossVectors(camForward, new THREE.Vector3(0, 1, 0)).normalize();
+
+    if (keys['KeyW']) { p1mx += camForward.x; p1mz += camForward.z; }
+    if (keys['KeyS']) { p1mx -= camForward.x; p1mz -= camForward.z; }
+    if (keys['KeyA']) { p1mx -= camRight.x; p1mz -= camRight.z; }
+    if (keys['KeyD']) { p1mx += camRight.x; p1mz += camRight.z; }
+
+    const len1 = Math.sqrt(p1mx * p1mx + p1mz * p1mz);
+    if (len1 > 0) {
+      p1mx = (p1mx / len1) * MOVE_SPEED;
+      p1mz = (p1mz / len1) * MOVE_SPEED;
+    }
+
+    p1jump = !!(keys['Space']);
+  }
+
+  // --- Player 2 input ---
+  let p2mx = 0, p2mz = 0, p2jump = false;
+  {
+    const camForward = new THREE.Vector3();
+    camera.getWorldDirection(camForward);
+    camForward.y = 0;
+    camForward.normalize();
+    const camRight = new THREE.Vector3();
+    camRight.crossVectors(camForward, new THREE.Vector3(0, 1, 0)).normalize();
+
+    if (keys['ArrowUp']) { p2mx += camForward.x; p2mz += camForward.z; }
+    if (keys['ArrowDown']) { p2mx -= camForward.x; p2mz -= camForward.z; }
+    if (keys['ArrowLeft']) { p2mx -= camRight.x; p2mz -= camRight.z; }
+    if (keys['ArrowRight']) { p2mx += camRight.x; p2mz += camRight.z; }
+
+    const len2 = Math.sqrt(p2mx * p2mx + p2mz * p2mz);
+    if (len2 > 0) {
+      p2mx = (p2mx / len2) * MOVE_SPEED;
+      p2mz = (p2mz / len2) * MOVE_SPEED;
+    }
+
+    p2jump = !!(keys['Enter'] || keys['ShiftRight']);
+  }
+
+  // --- Update both players ---
+  updatePlayer(player1, p1mx, p1mz, p1jump, dt);
+  updatePlayer(player2, p2mx, p2mz, p2jump, dt);
+
+  // --- Checkpoint detection (independent per player) ---
+  for (const c of checkpoints) {
+    // Player 1
+    if (!c.reachedP1) {
+      const dx = player1.x - c.data.x;
+      const dy = (player1.y + PLAYER_HEIGHT / 2) - c.data.y;
+      const dz = player1.z - c.data.z;
+      const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      if (dist < 2.0) {
+        c.reachedP1 = true;
+        player1.spawnX = c.data.spawnX;
+        player1.spawnY = c.data.spawnY;
+        player1.spawnZ = c.data.spawnZ;
+        // Turn green when either player reaches
+        c.mesh.material.color.setHex(0x00b894);
+        c.mesh.material.emissive.setHex(0x00b894);
+        c.light.color.setHex(0x00b894);
+        showCheckpointMessage('P1');
+      }
+    }
+    // Player 2
+    if (!c.reachedP2) {
+      const dx = player2.x - c.data.x;
+      const dy = (player2.y + PLAYER_HEIGHT / 2) - c.data.y;
+      const dz = player2.z - c.data.z;
+      const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      if (dist < 2.0) {
+        c.reachedP2 = true;
+        player2.spawnX = c.data.spawnX;
+        player2.spawnY = c.data.spawnY;
+        player2.spawnZ = c.data.spawnZ;
+        c.mesh.material.color.setHex(0x00b894);
+        c.mesh.material.emissive.setHex(0x00b894);
+        c.light.color.setHex(0x00b894);
+        showCheckpointMessage('P2');
+      }
+    }
+  }
+
+  // --- Finish detection ---
+  if (finishPlatform) {
+    const fd = finishPlatform.data;
+    // Check P1
+    if (Math.abs(player1.x - fd.x) < fd.w / 2 + 1 &&
+        Math.abs(player1.z - fd.z) < fd.d / 2 + 1 &&
+        player1.y >= fd.y && player1.y < fd.y + 4) {
+      gameWon = true;
+      gameRunning = false;
+      stopMusic();
+      document.getElementById('win-title').textContent = '🏆 Green Elephant Wins!';
+      document.getElementById('win-time').textContent = `Time: ${gameTime.toFixed(2)}s`;
+      document.getElementById('win-deaths').textContent = `P1 Falls: ${player1.deathCount} · P2 Falls: ${player2.deathCount}`;
+      overlay.classList.add('active');
+    }
+    // Check P2
+    if (!gameWon && Math.abs(player2.x - fd.x) < fd.w / 2 + 1 &&
+        Math.abs(player2.z - fd.z) < fd.d / 2 + 1 &&
+        player2.y >= fd.y && player2.y < fd.y + 4) {
+      gameWon = true;
+      gameRunning = false;
+      stopMusic();
+      document.getElementById('win-title').textContent = '🏆 Orange Elephant Wins!';
+      document.getElementById('win-time').textContent = `Time: ${gameTime.toFixed(2)}s`;
+      document.getElementById('win-deaths').textContent = `P1 Falls: ${player1.deathCount} · P2 Falls: ${player2.deathCount}`;
+      overlay.classList.add('active');
+    }
+  }
+
+  // --- Fall detection ---
+  if (player1.y < FALL_THRESHOLD) {
+    player1.deathCount++;
+    p1DeathsEl.textContent = `P1 Falls: ${player1.deathCount}`;
+    respawnPlayer(player1);
+  }
+  if (player2.y < FALL_THRESHOLD) {
+    player2.deathCount++;
+    p2DeathsEl.textContent = `P2 Falls: ${player2.deathCount}`;
+    respawnPlayer(player2);
+  }
+
+  // --- Animate both elephants ---
+  animateElephant(elephant1, player1, t);
+  animateElephant(elephant2, player2, t);
+
+  // --- Shadow light follows the leader ---
+  const leader = player1.z < player2.z ? player1 : player2;
+  dirLight.position.set(leader.x + 20, leader.y + 40, leader.z + 20);
+  dirLight.target.position.set(leader.x, leader.y, leader.z);
+  dirLight.target.updateMatrixWorld();
+
+  // --- Camera ---
+  updateCamera(dt);
+
+  renderer.render(scene, camera);
+}
+
+// Kick off
+camPos.set(player1.x + CAM_OFFSET.x, player1.y + CAM_OFFSET.y, player1.z + CAM_OFFSET.z);
+update();
+
+
+// ============================================================
+//  RESIZE HANDLER
+// ============================================================
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+</script>
+</body>
+</html>
